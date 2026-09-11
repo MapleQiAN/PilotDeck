@@ -413,6 +413,8 @@ export function createRouterRuntime(
     const nowMs = (deps.now?.() ?? new Date()).getTime();
     const priorTaskCard = sticky?.taskCard;
     const snapshotCard = buildTaskCard(input.metadata?.taskSnapshot, nowMs);
+    const routeReassessment = input.metadata?.routeReassessment;
+    const isRouteReassessment = routeReassessment !== undefined;
     let nextTaskCard = snapshotCard ?? priorTaskCard;
     let taskCardRoute: RouterMutationsLog["taskCardRoute"];
     const baseUsage = usageCache.get(input.sessionId);
@@ -447,7 +449,8 @@ export function createRouterRuntime(
     }
 
     let scenarioType: RouterScenarioType = scenarioOutcome.scenarioType;
-    const previousStickySelection = (input.metadata?.previousProvider && input.metadata.previousModel)
+    const previousStickySelection = input.metadata?.previousProvider
+      && input.metadata.previousModel
       ? {
         id: `${input.metadata.previousProvider}/${input.metadata.previousModel}`,
         provider: input.metadata.previousProvider,
@@ -480,7 +483,7 @@ export function createRouterRuntime(
       let stickyHit = false;
 
       const continuation = input.metadata?.continuation;
-      if (continuationEligible && continuation?.matched === true) {
+      if (!isRouteReassessment && continuationEligible && continuation?.matched === true) {
         selection = {
           id: `${continuation.previousProvider}/${continuation.previousModel}`,
           provider: continuation.previousProvider,
@@ -499,7 +502,7 @@ export function createRouterRuntime(
         };
       }
 
-      if (!stickyHit && !taskDoneReset && input.isMainAgent && input.request.messages.length > 1) {
+      if (!stickyHit && !isRouteReassessment && !taskDoneReset && input.isMainAgent && input.request.messages.length > 1) {
         const mainSticky = sessionStore.get(input.sessionId, false);
         if (mainSticky?.stickyProvider && mainSticky.stickyModel) {
           selection = {
@@ -513,7 +516,7 @@ export function createRouterRuntime(
         }
       }
 
-      if (!stickyHit && !taskDoneReset && !input.isMainAgent && subagentPolicy === "judge" && input.request.messages.length > 1) {
+      if (!stickyHit && !isRouteReassessment && !taskDoneReset && !input.isMainAgent && subagentPolicy === "judge" && input.request.messages.length > 1) {
         const subSticky = sessionStore.get(input.sessionId, true);
         if (subSticky?.stickyProvider && subSticky.stickyModel) {
           selection = {
@@ -538,10 +541,12 @@ export function createRouterRuntime(
           abortSignal: input.abortSignal,
           previousTier: input.metadata?.previousTier,
           taskCard: cardForJudge,
+          clarificationEvidence: routeReassessment?.evidence,
           sessionId: input.sessionId,
           telemetry,
         });
         if (tokenSaver) {
+          const isNewTask = routeReassessment ? false : tokenSaver.isNewTask;
           if (tokenSaver.failureReason) {
             events.emit({
               type: "pilotdeck_router_token_saver_failed",
@@ -562,7 +567,7 @@ export function createRouterRuntime(
             const tierDirection = getTierDirection(previousTier, tokenSaver.tier);
             const keepExistingOrchestration = sticky?.orchestrating === true
               && !taskDoneReset
-              && tokenSaver.isNewTask !== true
+              && isNewTask !== true
               && tierDirection !== "upgrade"
               && previousStickySelection !== undefined
               && previousTier !== undefined;
@@ -574,7 +579,7 @@ export function createRouterRuntime(
               retainedOrchestrationTier = previousTier;
             } else if (
               !tokenSaver.failureReason
-              && tokenSaver.isNewTask !== true
+              && isNewTask !== true
               && !taskDoneReset
             ) {
               const cacheAware = maybePreserveStickyForCache(
@@ -596,7 +601,7 @@ export function createRouterRuntime(
           const judgeCalled = Boolean(tokenSaver.judgeAttempts ?? tokenSaver.failure?.attempts);
           if (tokenSaver.failureReason) {
             if (!taskDoneReset) nextTaskCard = snapshotCard ?? priorTaskCard;
-          } else if (tokenSaver.isNewTask === true) {
+          } else if (isNewTask === true) {
             const snapshotIsCompletedPriorTask = snapshotCard?.taskDone === true
               && priorTaskCard?.taskDone === true
               && snapshotCard.goal === priorTaskCard.goal;
@@ -608,7 +613,8 @@ export function createRouterRuntime(
             shortCircuited: false,
             hasCard: Boolean(nextTaskCard),
             judgeCalled,
-            ...(tokenSaver.isNewTask !== undefined ? { isNewTask: tokenSaver.isNewTask } : {}),
+            ...(isNewTask !== undefined ? { isNewTask } : {}),
+            ...(routeReassessment ? { reassessment: routeReassessment.reason } : {}),
             reason: tokenSaver.failureReason
               ? "fallback"
               : taskDoneReset

@@ -79,11 +79,13 @@ import {
 import type {
   ContinuationRoutingInfo,
   InvalidateStickyResult,
+  RouteReassessment,
   RouterDecisionInput,
   TaskSnapshot,
 } from "../../router/index.js";
 import { extractLastUserMessage } from "../../router/tokenSaver/extractLastUserMessage.js";
 import { isShortContinuation } from "../../router/tokenSaver/classifyAndRoute.js";
+import { extractElicitationRouteEvidence } from "../../router/tokenSaver/extractElicitationRouteEvidence.js";
 
 const TOOL_EVENT_PUMP_INTERVAL_MS = 500;
 const SUBAGENT_STATUS_HEARTBEAT_MS = 2_000;
@@ -379,6 +381,7 @@ export class AgentLoop {
     const continuation = turnSticky.continuation;
     const taskRoutingFacts = readTaskRoutingFacts(this.dependencies, input.sessionId);
     let previousTier: string | undefined = stickyInfo?.previousTier;
+    let pendingRouteReassessment: RouteReassessment | undefined;
 
     const continueWithSyntheticPrompt = async (
       decision: LargeFileRepairDecision,
@@ -537,6 +540,7 @@ export class AgentLoop {
       // Split decide + execute so we can insert a post-routing compact pass
       // when the routed model's context window differs from the agent's
       // default model (the window used by the first tryAutoCompact above).
+      const routeReassessmentForDecision = pendingRouteReassessment;
       const decision = input.modelOverride ? {
         provider: input.modelOverride.provider,
         model: input.modelOverride.model,
@@ -555,8 +559,10 @@ export class AgentLoop {
           previousModel: stickyInfo?.previousModel,
           taskSnapshot: taskRoutingFacts.taskSnapshot,
           continuation,
+          routeReassessment: routeReassessmentForDecision,
         }),
       });
+      pendingRouteReassessment = undefined;
       const routedLimits = this.getModelTokenLimits(decision.provider, decision.model);
       const routedMaxOutputTokens = routedLimits?.maxOutputTokens;
 
@@ -1810,6 +1816,15 @@ export class AgentLoop {
         repairedToolCalls: assembled.hasRepairedToolCalls === true,
         finishReason: assembled.finishReason,
       });
+      if (!this.config.isSubagent) {
+        const elicitationEvidence = extractElicitationRouteEvidence(pairedResults);
+        if (elicitationEvidence) {
+          pendingRouteReassessment = {
+            reason: "ask_user_question_answered",
+            evidence: elicitationEvidence,
+          };
+        }
+      }
       permissionDenials = [...permissionDenials, ...collectPermissionDenials(pairedResults)];
       for (const result of pairedResults) {
         if (result.type === "success" && result.metadata?.structuredOutput) {
@@ -3196,6 +3211,7 @@ function buildTurnRoutingMetadata(input: {
   previousModel?: string;
   taskSnapshot?: TaskSnapshot;
   continuation?: ContinuationRoutingInfo;
+  routeReassessment?: RouteReassessment;
 }): RouterDecisionInput["metadata"] {
   const metadata: NonNullable<RouterDecisionInput["metadata"]> = {};
   if (input.previousTier !== undefined) metadata.previousTier = input.previousTier;
@@ -3203,6 +3219,7 @@ function buildTurnRoutingMetadata(input: {
   if (input.previousModel !== undefined) metadata.previousModel = input.previousModel;
   if (input.taskSnapshot) metadata.taskSnapshot = input.taskSnapshot;
   if (input.continuation) metadata.continuation = input.continuation;
+  if (input.routeReassessment) metadata.routeReassessment = input.routeReassessment;
   return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 

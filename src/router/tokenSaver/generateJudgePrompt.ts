@@ -8,12 +8,20 @@ export type JudgePromptInput = {
   taskCard?: TaskCard;
   /** Tier from the previous turn; background context only — never a forced inheritance. */
   previousTier?: string;
+  /** Structured clarification answers that should refine the current task. */
+  clarificationEvidence?: string;
 };
 
 /** Total budget (chars) for the serialized card block sent to the judge. */
 const CARD_TEXT_BUDGET_CHARS = 1500;
 
-export function generateJudgePrompt({ userMessage, config, taskCard, previousTier }: JudgePromptInput): string {
+export function generateJudgePrompt({
+  userMessage,
+  config,
+  taskCard,
+  previousTier,
+  clarificationEvidence,
+}: JudgePromptInput): string {
   const tierLines = Object.entries(config.tiers)
     .map(([name, tier]) => {
       const desc = tier.description ? `: ${tier.description}` : "";
@@ -32,7 +40,11 @@ export function generateJudgePrompt({ userMessage, config, taskCard, previousTie
     ? `\n## Background\nThe previous turn was classified as tier: **${previousTier}**. Treat this strictly as background context; do not assume the message continues that task, and do not force the same tier.\n`
     : "";
 
-  return `You are a model-tier classifier for the PilotDeck router. Given the following user message, classify it into exactly one of the available tiers.\n\nAvailable tiers:\n${tierLines}\n${rulesSection}${cardSection}${contextSection}\nUser message:\n"""\n${userMessage}\n"""\n\nDefault tier when uncertain: ${config.defaultTier}.\n\nRespond with exactly:\n<tier>reasoning</tier>\n<new_task>yes|no</new_task>\n\nOutput rules:\n- <tier> is required and its content must be one of the available tier names.\n- <new_task> is optional; include it only when you are confident. Answer "yes" when the user message starts a genuinely different task instead of continuing the current one, otherwise "no".\n- Do not rewrite the goal, do not emit free-form explanations outside the tags.`;
+  const clarificationSection = clarificationEvidence
+    ? `\n## Clarification answers\n${clarificationEvidence}\nThese answers belong to the current task. Use them to reassess the task's difficulty; do not treat the act of answering as a new task.\n`
+    : "";
+
+  return `You are a model-tier classifier for the PilotDeck router. Given the following user message, classify it into exactly one of the available tiers.\n\nAvailable tiers:\n${tierLines}\n${rulesSection}${cardSection}${contextSection}${clarificationSection}\nUser message:\n"""\n${userMessage}\n"""\n\nDefault tier when uncertain: ${config.defaultTier}.\n\nRespond with exactly:\n<tier>reasoning</tier>\n<new_task>yes|no</new_task>\n\nOutput rules:\n- <tier> is required and its content must be one of the available tier names.\n- <new_task> is optional; include it only when you are confident. Answer "yes" when the user message starts a genuinely different task instead of continuing the current one, otherwise "no".\n- When clarification answers are present, they are part of the current task; normally return <new_task>no</new_task>.\n- Do not rewrite the goal, do not emit free-form explanations outside the tags.`;
 }
 
 /**

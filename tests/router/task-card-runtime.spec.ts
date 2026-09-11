@@ -503,6 +503,98 @@ test("judge fallback preserves an unfinished card and invalidateSticky preserves
   await router.shutdown();
 });
 
+test("ask-user-question reassessment bypasses sticky and can upgrade the current task", async () => {
+  const harness = runtimeWithJudge([
+    "<tier>simple</tier><new_task>no</new_task>",
+    "<tier>reasoning</tier><new_task>yes</new_task>",
+  ]);
+  const configured = config();
+  configured.stats = {
+    enabled: false,
+    modelPricing: {
+      "main/simple-model": { input: 1, cacheRead: 0.1 },
+      "main/reasoning-model": { input: 10 },
+    },
+  };
+  const router = createRouterRuntime(configured, harness);
+  await router.decide({
+    request: request("implement the migration"),
+    sessionId: "ask-reassessment",
+    isMainAgent: true,
+    metadata: { taskSnapshot: snapshot("implement the migration") },
+  });
+  router.observeUsage("ask-reassessment", {
+    inputTokens: 100,
+    cacheReadTokens: 80,
+    totalTokens: 100,
+  });
+
+  const decision = await router.decide({
+    request: request("implement the migration"),
+    sessionId: "ask-reassessment",
+    isMainAgent: true,
+    metadata: {
+      routeReassessment: {
+        reason: "ask_user_question_answered",
+        evidence: "Clarification collected through ask_user_question:\n- Question: Environment?\n  Answer: Production with rollback verification",
+      },
+    },
+  });
+
+  assert.equal(harness.getJudgeCalls(), 2);
+  assert.equal(decision.provider, "main");
+  assert.equal(decision.model, "reasoning-model");
+  assert.equal(decision.tokenSaverTier, "reasoning");
+  assert.equal(decision.mutations.taskCardRoute?.isNewTask, false);
+  assert.equal(decision.mutations.cacheAwareSwitch, undefined);
+  assert.equal(decision.mutations.taskCardRoute?.reassessment, "ask_user_question_answered");
+  assert.match(promptText(harness.judgeRequests[1]!), /Production with rollback verification/);
+  await router.shutdown();
+});
+
+test("ask-user-question reassessment preserves active orchestration for the current task", async () => {
+  const harness = runtimeWithJudge([
+    "<tier>reasoning</tier><new_task>no</new_task>",
+    "<tier>simple</tier><new_task>yes</new_task>",
+  ]);
+  const configured = config();
+  configured.autoOrchestrate = {
+    enabled: true,
+    triggerTiers: ["reasoning"],
+    slimSystemPrompt: false,
+  };
+  const router = createRouterRuntime(configured, harness);
+  const initial = await router.decide({
+    request: request("start complex work"),
+    sessionId: "ask-reassessment-orchestration",
+    isMainAgent: true,
+    metadata: { taskSnapshot: snapshot("complex work") },
+  });
+  assert.equal(initial.orchestrating, true);
+
+  const decision = await router.decide({
+    request: request("start complex work"),
+    sessionId: "ask-reassessment-orchestration",
+    isMainAgent: true,
+    metadata: {
+      routeReassessment: {
+        reason: "ask_user_question_answered",
+        evidence: "Clarification collected through ask_user_question:\n- Question: Scope?\n  Answer: Keep this task small",
+      },
+    },
+  });
+
+  assert.equal(harness.getJudgeCalls(), 2);
+  assert.equal(decision.model, "reasoning-model");
+  assert.equal(decision.tokenSaverTier, "reasoning");
+  assert.equal(decision.orchestrating, true);
+  assert.equal(decision.mutations.taskCardRoute?.isNewTask, false);
+  assert.equal(decision.mutations.taskCardRoute?.reassessment, "ask_user_question_answered");
+  assert.equal(decision.mutations.orchestrationActivated?.continued, true);
+  assert.match(promptText(harness.judgeRequests[1]!), /Keep this task small/);
+  await router.shutdown();
+});
+
 test("execute persists decision evidence and separately priced judge usage to JSONL", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pilotdeck-runtime-stats-"));
   try {

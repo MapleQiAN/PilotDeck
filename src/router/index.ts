@@ -10,6 +10,7 @@ export type {
   RouterDecisionResolution,
   RouterExecuteContext,
   RouterMutationsLog,
+  RouteReassessment,
   RouterScenarioType,
   SessionRoutingState,
 } from "./protocol/decision.js";
@@ -69,6 +70,7 @@ export {
   type TokenSaverDecision,
   type TokenSaverFailure,
 } from "./tokenSaver/classifyAndRoute.js";
+export { extractElicitationRouteEvidence } from "./tokenSaver/extractElicitationRouteEvidence.js";
 export {
   applyOrchestration,
   type OrchestrationInput,

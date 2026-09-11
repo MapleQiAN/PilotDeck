@@ -279,6 +279,91 @@ test("task snapshot maps only approved facts and degrades locally", async (t) =>
   });
 });
 
+test("successful ask_user_question schedules one route reassessment for the next decide", async () => {
+  const call: CanonicalToolCall = {
+    id: "ask-1",
+    name: "ask_user_question",
+    input: { questions: [{ question: "Environment?", header: "Env", options: [] }] },
+  };
+  const followUpCall: CanonicalToolCall = {
+    id: "follow-up-1",
+    name: "bash",
+    input: { command: "echo follow-up" },
+  };
+  const result = await runHarness({
+    scripts: [toolResponse([call]), toolResponse([followUpCall]), finalResponse("done")],
+    toolResults: [[{
+      type: "success",
+      toolCallId: call.id,
+      toolName: call.name,
+      content: [{ type: "text", text: "User has answered" }],
+      data: {
+        questions: [{ question: "Environment?", header: "Env", options: [] }],
+        answers: { "Environment?": "Production" },
+      },
+      startedAt: "2026-09-11T00:00:00.000Z",
+      completedAt: "2026-09-11T00:00:00.001Z",
+    }]],
+  });
+
+  assert.equal(result.metadata.length, 3);
+  assert.equal(result.metadata[0]?.routeReassessment, undefined);
+  assert.equal(result.metadata[1]?.routeReassessment?.reason, "ask_user_question_answered");
+  assert.match(result.metadata[1]?.routeReassessment?.evidence ?? "", /Production/);
+  assert.equal(result.metadata[2]?.routeReassessment, undefined);
+});
+
+test("empty ask_user_question answers do not schedule route reassessment", async () => {
+  const call: CanonicalToolCall = {
+    id: "ask-empty-1",
+    name: "ask_user_question",
+    input: { questions: [{ question: "Environment?", header: "Env", options: [] }] },
+  };
+  const result = await runHarness({
+    scripts: [toolResponse([call]), finalResponse("done")],
+    toolResults: [[{
+      type: "success",
+      toolCallId: call.id,
+      toolName: call.name,
+      content: [{ type: "text", text: "User has answered" }],
+      data: {
+        questions: [{ question: "Environment?", header: "Env", options: [] }],
+        answers: { "Environment?": "  " },
+      },
+      startedAt: "2026-09-11T00:00:00.000Z",
+      completedAt: "2026-09-11T00:00:00.001Z",
+    }]],
+  });
+
+  assert.equal(result.metadata[1]?.routeReassessment, undefined);
+});
+
+test("subagent ask_user_question answers do not schedule route reassessment", async () => {
+  const call: CanonicalToolCall = {
+    id: "ask-subagent-1",
+    name: "ask_user_question",
+    input: { questions: [{ question: "Environment?", header: "Env", options: [] }] },
+  };
+  const result = await runHarness({
+    isSubagent: true,
+    scripts: [toolResponse([call]), finalResponse("done")],
+    toolResults: [[{
+      type: "success",
+      toolCallId: call.id,
+      toolName: call.name,
+      content: [{ type: "text", text: "User has answered" }],
+      data: {
+        questions: [{ question: "Environment?", header: "Env", options: [] }],
+        answers: { "Environment?": "Production" },
+      },
+      startedAt: "2026-09-11T00:00:00.000Z",
+      completedAt: "2026-09-11T00:00:00.001Z",
+    }]],
+  });
+
+  assert.equal(result.metadata[1]?.routeReassessment, undefined);
+});
+
 test("model override reads static facts without calling router decide", async () => {
   const result = await runHarness({
     userMessage: "继续",
