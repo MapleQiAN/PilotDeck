@@ -163,6 +163,171 @@ test("continuation inherits sticky selection and performs zero additional judge 
   await router.shutdown();
 });
 
+test("an active orchestration exits only when the judge confirms a new task", async () => {
+  const harness = runtimeWithJudge([
+    "<tier>reasoning</tier><new_task>no</new_task>",
+    "<tier>simple</tier><new_task>no</new_task>",
+    "<tier>simple</tier>",
+    "<tier>simple</tier><new_task>yes</new_task>",
+  ]);
+  const configured = config();
+  configured.autoOrchestrate = {
+    enabled: true,
+    triggerTiers: ["reasoning"],
+    slimSystemPrompt: false,
+  };
+  const router = createRouterRuntime(configured, harness);
+  await router.decide({
+    request: request("start complex work"),
+    sessionId: "orchestration-new-task",
+    isMainAgent: true,
+    metadata: { taskSnapshot: snapshot("complex work") },
+  });
+
+  const prior = router.invalidateSticky("orchestration-new-task");
+  assert.equal(router.peekSticky("orchestration-new-task").previousTier, undefined);
+  assert.equal(router.peekSticky("orchestration-new-task").orchestrating, true);
+  const sameTask = await router.decide({
+    request: request("ordinary follow-up"),
+    sessionId: "orchestration-new-task",
+    isMainAgent: true,
+    metadata: {
+      previousTier: prior.previousTier,
+      previousProvider: prior.previousProvider,
+      previousModel: prior.previousModel,
+    },
+  });
+  assert.equal(harness.getJudgeCalls(), 2);
+  assert.equal(sameTask.model, "reasoning-model");
+  assert.equal(sameTask.tokenSaverTier, "reasoning");
+  assert.equal(sameTask.orchestrating, true);
+  assert.equal(sameTask.mutations.taskCardRoute?.isNewTask, false);
+  assert.equal(sameTask.mutations.orchestrationActivated?.continued, true);
+
+  const uncertainPrior = router.invalidateSticky("orchestration-new-task");
+  const uncertainTask = await router.decide({
+    request: request("ambiguous follow-up"),
+    sessionId: "orchestration-new-task",
+    isMainAgent: true,
+    metadata: {
+      previousTier: uncertainPrior.previousTier,
+      previousProvider: uncertainPrior.previousProvider,
+      previousModel: uncertainPrior.previousModel,
+    },
+  });
+  assert.equal(harness.getJudgeCalls(), 3);
+  assert.equal(uncertainTask.model, "reasoning-model");
+  assert.equal(uncertainTask.tokenSaverTier, "reasoning");
+  assert.equal(uncertainTask.orchestrating, true);
+  assert.equal(uncertainTask.mutations.taskCardRoute?.isNewTask, undefined);
+
+  const retained = router.invalidateSticky("orchestration-new-task");
+  const newTask = await router.decide({
+    request: request("unrelated greeting"),
+    sessionId: "orchestration-new-task",
+    isMainAgent: true,
+    metadata: {
+      previousTier: retained.previousTier,
+      previousProvider: retained.previousProvider,
+      previousModel: retained.previousModel,
+    },
+  });
+  assert.equal(harness.getJudgeCalls(), 4);
+  assert.equal(newTask.model, "simple-model");
+  assert.equal(newTask.tokenSaverTier, "simple");
+  assert.equal(newTask.orchestrating, false);
+  assert.equal(newTask.mutations.taskCardRoute?.isNewTask, true);
+  assert.equal(newTask.mutations.orchestrationActivated, undefined);
+  await router.shutdown();
+});
+
+test("a completed task card overrides continuation and clears old orchestration", async () => {
+  const harness = runtimeWithJudge([
+    "<tier>reasoning</tier><new_task>no</new_task>",
+    "<tier>simple</tier><new_task>no</new_task>",
+  ]);
+  const configured = config();
+  configured.autoOrchestrate = {
+    enabled: true,
+    triggerTiers: ["reasoning"],
+    slimSystemPrompt: false,
+  };
+  const router = createRouterRuntime(configured, harness);
+  await router.decide({
+    request: request("finish complex work"),
+    sessionId: "orchestration-task-done",
+    isMainAgent: true,
+    metadata: { taskSnapshot: snapshot("completed work", "completed") },
+  });
+
+  const decision = await router.decide({
+    request: request("继续"),
+    sessionId: "orchestration-task-done",
+    isMainAgent: true,
+    metadata: {
+      continuation: {
+        matched: true,
+        previousTier: "reasoning",
+        previousProvider: "main",
+        previousModel: "reasoning-model",
+      },
+    },
+  });
+  assert.equal(harness.getJudgeCalls(), 2);
+  assert.equal(decision.model, "simple-model");
+  assert.equal(decision.tokenSaverTier, "simple");
+  assert.equal(decision.orchestrating, false);
+  assert.equal(decision.mutations.taskCardRoute?.reason, "task_done_reset");
+  assert.equal(decision.mutations.taskCardRoute?.shortCircuited, false);
+  assert.equal(decision.mutations.orchestrationActivated, undefined);
+  await router.shutdown();
+});
+
+test("an active orchestration survives an unconfirmed judge failure", async () => {
+  const failure = new ModelProviderError({
+    provider: "judge",
+    protocol: "openai",
+    code: "auth_error",
+    message: "not configured",
+    retryable: false,
+  });
+  const harness = runtimeWithJudge([
+    "<tier>reasoning</tier><new_task>no</new_task>",
+    failure,
+  ]);
+  const configured = config();
+  configured.autoOrchestrate = {
+    enabled: true,
+    triggerTiers: ["reasoning"],
+    slimSystemPrompt: false,
+  };
+  const router = createRouterRuntime(configured, harness);
+  await router.decide({
+    request: request("start complex work"),
+    sessionId: "orchestration-judge-failure",
+    isMainAgent: true,
+  });
+
+  const prior = router.invalidateSticky("orchestration-judge-failure");
+  const decision = await router.decide({
+    request: request("ordinary follow-up"),
+    sessionId: "orchestration-judge-failure",
+    isMainAgent: true,
+    metadata: {
+      previousTier: prior.previousTier,
+      previousProvider: prior.previousProvider,
+      previousModel: prior.previousModel,
+    },
+  });
+  assert.equal(harness.getJudgeCalls(), 2);
+  assert.equal(decision.model, "reasoning-model");
+  assert.equal(decision.tokenSaverTier, "reasoning");
+  assert.equal(decision.orchestrating, true);
+  assert.equal(decision.mutations.taskCardRoute?.reason, "fallback");
+  assert.equal(decision.mutations.orchestrationActivated?.continued, true);
+  await router.shutdown();
+});
+
 test("explicit routing cannot be overwritten by continuation metadata", async () => {
   const harness = runtimeWithJudge(["<tier>reasoning</tier>"]);
   const router = createRouterRuntime(config(), harness);
