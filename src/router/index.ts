@@ -62,7 +62,6 @@ export {
   type TaskCard,
   type TaskSnapshot,
   type TaskSnapshotTodo,
-  type UpgradeEvidence,
 } from "./tokenSaver/buildTaskCard.js";
 export {
   classifyAndRoute,

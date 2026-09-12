@@ -33,7 +33,7 @@ async function withTempDir(run: (dir: string) => Promise<void>) {
   }
 }
 
-test("aggregates task-card, judge, guard, bypass, and net saved metrics", async () => {
+test("aggregates task-card, judge, cache guard, and net saved metrics", async () => {
   await withTempDir(async dir => {
     const collector = new TokenStatsCollector({
       enabled: true,
@@ -59,9 +59,7 @@ test("aggregates task-card, judge, guard, bypass, and net saved metrics", async 
           cachedCost: 1,
           prefillCost: 2,
           estimatedInputTokens: 1_000_000,
-          direction: "upgrade",
-          policy: "guard",
-          evidence: "verification_failed",
+          direction: "downgrade",
         },
       },
       judge: { called: true, attempts: 2, usage: { inputTokens: 10 }, cost: 0.25 },
@@ -76,17 +74,6 @@ test("aggregates task-card, judge, guard, bypass, and net saved metrics", async 
           judgeCalled: true,
           isNewTask: false,
           reason: "task_done_reset",
-        },
-        cacheAwareSwitch: {
-          action: "bypassed_by_evidence",
-          from: "actual/model",
-          to: "next/model",
-          cachedCost: 1,
-          prefillCost: 5,
-          estimatedInputTokens: 1_000_000,
-          direction: "upgrade",
-          policy: "exempt",
-          evidence: "verification_failed",
         },
       },
       judge: { called: false },
@@ -105,8 +92,8 @@ test("aggregates task-card, judge, guard, bypass, and net saved metrics", async 
       totalTaskCardRequests: 1,
       totalNewTaskResets: 1,
       totalGuardSavedCost: 1,
-      totalGuardBypassCost: 4,
-      totalNetSavedCost: -1.25,
+      totalGuardBypassCost: 0,
+      totalNetSavedCost: 2.75,
       perScenario: { default: 2 },
       perModel: { "actual/model": 2 },
       perProvider: { actual: 2 },
@@ -118,7 +105,6 @@ test("aggregates task-card, judge, guard, bypass, and net saved metrics", async 
     const persisted = await readFile(join(dir, "stats.jsonl"), "utf8");
     assert.match(persisted, /"taskCardRoute"/);
     assert.match(persisted, /"judge"/);
-    assert.match(persisted, /"bypassed_by_evidence"/);
   });
 });
 

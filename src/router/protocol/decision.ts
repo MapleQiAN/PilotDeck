@@ -2,7 +2,6 @@ import type {
   TaskCard,
   TaskSnapshot,
   RoutePhase,
-  UpgradeEvidence,
   ContinuationRoutingInfo,
 } from "../tokenSaver/buildTaskCard.js";
 
@@ -31,17 +30,13 @@ export type RouterMutationsLog = {
     to: string;
   };
   cacheAwareSwitch?: {
-    action: "kept_sticky" | "switched" | "bypassed_by_evidence";
+    action: "kept_sticky" | "switched";
     from: string;
     to: string;
     cachedCost: number;
     prefillCost: number;
     estimatedInputTokens: number;
     direction?: "upgrade" | "downgrade" | "same" | "unknown";
-    policy?: "guard" | "amortized" | "exempt";
-    evidence?: UpgradeEvidence;
-    amortizedPrefillCost?: number;
-    remainingTurns?: number;
   };
   taskCardRoute?: {
     shortCircuited: boolean;
@@ -107,7 +102,6 @@ export type RouterDecisionInput = {
     previousModel?: string;
     taskSnapshot?: TaskSnapshot;
     continuation?: ContinuationRoutingInfo;
-    upgradeEvidence?: UpgradeEvidence;
   };
 };
 

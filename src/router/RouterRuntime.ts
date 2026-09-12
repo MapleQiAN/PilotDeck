@@ -225,13 +225,19 @@ export function createRouterRuntime(
     nextTier: string | undefined,
     messages: CanonicalModelRequest["messages"],
     lastUsage: import("../model/index.js").CanonicalUsage | undefined,
-    upgradeEvidence: import("./tokenSaver/buildTaskCard.js").UpgradeEvidence | undefined,
   ): { selection: RouterModelRef; mutation?: RouterMutationsLog["cacheAwareSwitch"] } {
     const cacheAware = config.tokenSaver?.cacheAwareSwitching;
     if (cacheAware?.enabled === false || !current) {
       return { selection: next };
     }
     if (current.provider === next.provider && current.model === next.model) {
+      return { selection: next };
+    }
+
+    const direction = getTierDirection(currentTier, nextTier);
+    // The Judge is the authority on required capability. A tier upgrade must
+    // switch immediately instead of keeping a cheaper cached model around.
+    if (direction === "upgrade") {
       return { selection: next };
     }
 
@@ -266,12 +272,9 @@ export function createRouterRuntime(
     );
 
     const minSavingsRatio = cacheAware?.minSavingsRatio ?? 0;
-    const direction = getTierDirection(currentTier, nextTier);
-    const policy = cacheAware?.upgradePolicy ?? "guard";
     const requiredSavings = cachedCost * minSavingsRatio;
     const from = `${current.provider}/${current.model}`;
     const to = `${next.provider}/${next.model}`;
-    const evidence = upgradeEvidence;
     const mutationBase = {
       from,
       to,
@@ -279,29 +282,8 @@ export function createRouterRuntime(
       prefillCost,
       estimatedInputTokens,
       direction,
-      policy,
-      ...(evidence ? { evidence } : {}),
     };
-
-    if (direction === "upgrade" && evidence && policy === "exempt") {
-      return {
-        selection: next,
-        mutation: {
-          action: "bypassed_by_evidence",
-          ...mutationBase,
-        },
-      };
-    }
-
-    const remainingTurns = 3;
-    const amortizedPrefillCost = prefillCost / remainingTurns;
-    const comparisonPrefillCost = direction === "upgrade" && evidence && policy === "amortized"
-      ? amortizedPrefillCost
-      : prefillCost;
-    const shouldSwitch = comparisonPrefillCost + Number.EPSILON < cachedCost - requiredSavings;
-    const amortizedFields = direction === "upgrade" && evidence && policy === "amortized"
-      ? { amortizedPrefillCost, remainingTurns }
-      : {};
+    const shouldSwitch = prefillCost + Number.EPSILON < cachedCost - requiredSavings;
 
     if (shouldSwitch) {
       return {
@@ -309,7 +291,6 @@ export function createRouterRuntime(
         mutation: {
           action: "switched",
           ...mutationBase,
-          ...amortizedFields,
         },
       };
     }
@@ -319,7 +300,6 @@ export function createRouterRuntime(
       mutation: {
         action: "kept_sticky",
         ...mutationBase,
-        ...amortizedFields,
       },
     };
   }
@@ -575,17 +555,22 @@ export function createRouterRuntime(
           if (tokenSaver.selection) {
             selection = tokenSaver.selection;
             resolvedFrom = "tokenSaver";
-            const cacheAware = maybePreserveStickyForCache(
-              previousStickySelection,
-              selection,
-              sticky?.tokenSaverTier ?? input.metadata?.previousTier,
-              tokenSaver.tier,
-              input.request.messages,
-              baseUsage,
-              input.metadata?.upgradeEvidence,
-            );
-            selection = cacheAware.selection;
-            cacheAwareSwitch = cacheAware.mutation;
+            // A failure already resolved to the safe fallback, while a
+            // confirmed new task must not inherit the previous task's model.
+            // In both cases, applying cache stickiness here can make the
+            // reported tier disagree with the model that actually executes.
+            if (!tokenSaver.failureReason && tokenSaver.isNewTask !== true) {
+              const cacheAware = maybePreserveStickyForCache(
+                previousStickySelection,
+                selection,
+                sticky?.tokenSaverTier ?? input.metadata?.previousTier,
+                tokenSaver.tier,
+                input.request.messages,
+                baseUsage,
+              );
+              selection = cacheAware.selection;
+              cacheAwareSwitch = cacheAware.mutation;
+            }
           }
           tokenSaverTier = cacheAwareSwitch?.action === "kept_sticky"
             ? (sticky?.tokenSaverTier ?? input.metadata?.previousTier ?? tokenSaver.tier)

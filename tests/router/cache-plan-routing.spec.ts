@@ -5,7 +5,6 @@ import type { CanonicalModelRequest, ModelRuntime, ModelRuntimeOptions } from ".
 import { createRouterRuntime } from "../../src/router/RouterRuntime.js";
 import type { RouterConfig } from "../../src/router/config/schema.js";
 import { calculateInputCost, calculateCacheReadCost } from "../../src/router/utils/modelPricing.js";
-import type { UpgradeEvidence } from "../../src/router/tokenSaver/buildTaskCard.js";
 
 const capabilities = {
   supportsToolUse: true,
@@ -116,8 +115,8 @@ test("router stats prefer an explicit baseline model over the scenario default",
 type CacheRouteOptions = {
   currentTier: string;
   nextTier: "simple" | "medium" | "reasoning";
-  policy: "guard" | "exempt" | "amortized";
-  evidence?: UpgradeEvidence;
+  judgeFails?: boolean;
+  isNewTask?: boolean;
   currentProvider?: string;
   currentModel?: string;
   nextInputPrice?: number;
@@ -143,7 +142,6 @@ async function routeCacheChange(options: CacheRouteOptions) {
       cacheAwareSwitching: {
         enabled: true,
         minSavingsRatio: 0,
-        upgradePolicy: options.policy,
       },
     },
     stats: {
@@ -157,9 +155,19 @@ async function routeCacheChange(options: CacheRouteOptions) {
   const judgeRuntime = {
     ...runtime,
     async complete() {
+      if (options.judgeFails) {
+        return {
+          role: "assistant" as const,
+          content: [{ type: "thinking" as const, text: "unfinished analysis" }],
+          finishReason: "length" as const,
+        };
+      }
       return {
         role: "assistant" as const,
-        content: [{ type: "text" as const, text: `<tier>${options.nextTier}</tier>` }],
+        content: [{
+          type: "text" as const,
+          text: `<tier>${options.nextTier}</tier>${options.isNewTask ? "<new_task>yes</new_task>" : ""}`,
+        }],
         finishReason: "stop" as const,
       };
     },
@@ -184,98 +192,52 @@ async function routeCacheChange(options: CacheRouteOptions) {
       previousTier: options.currentTier,
       previousProvider: currentProvider,
       previousModel: currentModel,
-      ...(options.evidence ? { upgradeEvidence: options.evidence } : {}),
     },
   });
   await router.shutdown();
   return decision;
 }
 
-test("guard keeps the legacy single-turn cost decision for evidence-backed upgrades", async () => {
+test("judge fallback selects the configured default tier instead of preserving a cheaper sticky tier", async () => {
   const decision = await routeCacheChange({
-    currentTier: "medium",
-    nextTier: "reasoning",
-    policy: "guard",
-    evidence: "verification_failed",
+    currentTier: "simple",
+    nextTier: "medium",
+    judgeFails: true,
   });
-  const mutation = decision.mutations.cacheAwareSwitch;
-  assert.equal(decision.model, "cached-model");
+
+  assert.equal(decision.model, "medium-model");
   assert.equal(decision.tokenSaverTier, "medium");
-  assert.equal(mutation?.action, "kept_sticky");
-  assert.equal(mutation?.direction, "upgrade");
-  assert.equal(mutation?.policy, "guard");
-  assert.equal(mutation?.evidence, "verification_failed");
-  assert.ok((mutation?.prefillCost ?? 0) > (mutation?.cachedCost ?? 0));
-  assert.ok((mutation?.estimatedInputTokens ?? 0) > 0);
+  assert.equal(decision.mutations.cacheAwareSwitch, undefined);
 });
 
-test("exempt bypasses the cache guard only for evidence-backed upgrades", async () => {
+test("a confirmed new task does not preserve the previous task's cheaper sticky tier", async () => {
   const decision = await routeCacheChange({
-    currentTier: "medium",
+    currentTier: "simple",
     nextTier: "reasoning",
-    policy: "exempt",
-    evidence: "verification_failed",
+    isNewTask: true,
   });
-  const mutation = decision.mutations.cacheAwareSwitch;
+
   assert.equal(decision.model, "reasoning-model");
   assert.equal(decision.tokenSaverTier, "reasoning");
-  assert.equal(mutation?.action, "bypassed_by_evidence");
-  assert.equal(mutation?.direction, "upgrade");
-  assert.equal(mutation?.policy, "exempt");
-  assert.equal(mutation?.evidence, "verification_failed");
+  assert.equal(decision.mutations.cacheAwareSwitch, undefined);
+  assert.equal(decision.mutations.taskCardRoute?.isNewTask, true);
 });
 
-test("amortized upgrade switches when one third of prefill beats cached cost", async () => {
+test("judge-selected upgrades always switch without consulting the cache guard", async () => {
   const decision = await routeCacheChange({
     currentTier: "medium",
     nextTier: "reasoning",
-    policy: "amortized",
-    evidence: "todo_expanded",
-    nextInputPrice: 2.4,
+    nextInputPrice: 100,
   });
-  const mutation = decision.mutations.cacheAwareSwitch;
   assert.equal(decision.model, "reasoning-model");
-  assert.equal(mutation?.action, "switched");
-  assert.equal(mutation?.direction, "upgrade");
-  assert.equal(mutation?.policy, "amortized");
-  assert.equal(mutation?.remainingTurns, 3);
-  assert.equal(mutation?.amortizedPrefillCost, (mutation?.prefillCost ?? 0) / 3);
-  assert.ok((mutation?.amortizedPrefillCost ?? Infinity) < (mutation?.cachedCost ?? 0));
+  assert.equal(decision.tokenSaverTier, "reasoning");
+  assert.equal(decision.mutations.cacheAwareSwitch, undefined);
 });
 
-test("amortized upgrade keeps current when one third of prefill still costs more", async () => {
-  const decision = await routeCacheChange({
-    currentTier: "medium",
-    nextTier: "reasoning",
-    policy: "amortized",
-    evidence: "todo_expanded",
-    nextInputPrice: 6,
-  });
-  const mutation = decision.mutations.cacheAwareSwitch;
-  assert.equal(decision.model, "cached-model");
-  assert.equal(mutation?.action, "kept_sticky");
-  assert.equal(mutation?.remainingTurns, 3);
-  assert.ok((mutation?.amortizedPrefillCost ?? 0) > (mutation?.cachedCost ?? Infinity));
-});
-
-test("upgrade without evidence uses the legacy guard even under exempt policy", async () => {
-  const decision = await routeCacheChange({
-    currentTier: "medium",
-    nextTier: "reasoning",
-    policy: "exempt",
-  });
-  assert.equal(decision.model, "cached-model");
-  assert.equal(decision.mutations.cacheAwareSwitch?.action, "kept_sticky");
-  assert.equal(decision.mutations.cacheAwareSwitch?.direction, "upgrade");
-  assert.equal(decision.mutations.cacheAwareSwitch?.evidence, undefined);
-});
-
-test("downgrades never bypass the guard even with evidence and exempt policy", async () => {
+test("downgrades still use the cache guard", async () => {
   const decision = await routeCacheChange({
     currentTier: "reasoning",
     nextTier: "simple",
-    policy: "exempt",
-    evidence: "verification_failed",
   });
   assert.equal(decision.model, "cached-model");
   assert.equal(decision.mutations.cacheAwareSwitch?.action, "kept_sticky");
@@ -286,8 +248,6 @@ test("unknown tiers and same-tier model changes use the legacy guard", async () 
   const unknown = await routeCacheChange({
     currentTier: "legacy",
     nextTier: "medium",
-    policy: "exempt",
-    evidence: "verification_failed",
   });
   assert.equal(unknown.model, "cached-model");
   assert.equal(unknown.mutations.cacheAwareSwitch?.direction, "unknown");
@@ -296,8 +256,6 @@ test("unknown tiers and same-tier model changes use the legacy guard", async () 
   const same = await routeCacheChange({
     currentTier: "medium",
     nextTier: "medium",
-    policy: "exempt",
-    evidence: "verification_failed",
     currentProvider: "other",
     currentModel: "other-medium-model",
   });

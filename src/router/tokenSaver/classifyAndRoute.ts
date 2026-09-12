@@ -73,7 +73,7 @@ export async function classifyAndRoute(
 
   const knownTiers = Object.keys(config.tiers);
   const prompt = generateJudgePrompt({ userMessage, config, previousTier: input.previousTier, taskCard: input.taskCard });
-  const judgeRequest: CanonicalModelRequest = {
+  const judgeRequestBase: Omit<CanonicalModelRequest, "maxOutputTokens"> = {
     provider: config.judge.provider,
     model: config.judge.model,
     messages: [
@@ -82,16 +82,19 @@ export async function classifyAndRoute(
         content: [{ type: "text", text: prompt }],
       },
     ],
-    maxOutputTokens: 256,
     // Provider defaults are more compatible than an explicit temperature for
     // lightweight routing requests. Some compatible gateways reject the
     // field for particular models (including Claude-backed ones).
-    thinking: { enabled: false },
+    // `enabled: false` alone normalizes to the provider default and therefore
+    // does not emit a disable flag. Use the explicit mode so thinking-capable
+    // judge models cannot spend the small classification budget on reasoning.
+    thinking: { enabled: false, mode: "off" },
     stream: false,
   };
 
   const timeoutMs = Math.max(500, config.judgeTimeoutMs ?? 5_000);
   const maxAttempts = 3;
+  let judgeOutputTokenBudget = 256;
   input.telemetry?.trackFeatureLoopStage({
     module: "router",
     ownerModule: "router",
@@ -119,6 +122,10 @@ export async function classifyAndRoute(
       forwardAbort();
     }
     try {
+      const judgeRequest: CanonicalModelRequest = {
+        ...judgeRequestBase,
+        maxOutputTokens: judgeOutputTokenBudget,
+      };
       input.telemetry?.trackFeatureLoopStage({
         module: "router",
         ownerModule: "router",
@@ -149,7 +156,7 @@ export async function classifyAndRoute(
         }),
       ]);
       console.log(
-        `[token-saver] Judge raw content blocks (attempt ${attempt}):`,
+        `[token-saver] Judge raw content blocks (attempt ${attempt}, maxOutputTokens=${judgeOutputTokenBudget}):`,
         JSON.stringify(response.content).slice(0, 500),
         `| finishReason=${response.finishReason}`,
       );
@@ -160,6 +167,9 @@ export async function classifyAndRoute(
 
       if (!text) {
         if (attempt < maxAttempts) {
+          if (response.finishReason === "length") {
+            judgeOutputTokenBudget = Math.min(judgeOutputTokenBudget * 2, 1_024);
+          }
           continue;
         }
         input.telemetry?.trackFeatureLoopStage({
@@ -192,6 +202,9 @@ export async function classifyAndRoute(
       const tier = decision.tier;
       if (!tier) {
         if (attempt < maxAttempts) {
+          if (response.finishReason === "length") {
+            judgeOutputTokenBudget = Math.min(judgeOutputTokenBudget * 2, 1_024);
+          }
           continue;
         }
         input.telemetry?.trackFeatureLoopStage({
