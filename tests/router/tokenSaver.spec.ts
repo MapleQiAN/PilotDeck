@@ -151,6 +151,61 @@ test("omits temperature for an OpenAI-compatible judge", async () => {
   assert.equal(request?.temperature, undefined);
 });
 
+test("explicitly disables thinking for the judge request", async () => {
+  let request: CanonicalModelRequest | undefined;
+  const judgeRuntime = {
+    complete: async (nextRequest: CanonicalModelRequest) => {
+      request = nextRequest;
+      return {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "<tier>medium</tier>" }],
+        finishReason: "stop" as const,
+      };
+    },
+  } as unknown as ModelRuntime;
+
+  await classifyAndRoute({
+    config: config(),
+    messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    judgeRuntime,
+  });
+
+  assert.deepEqual(request?.thinking, { enabled: false, mode: "off" });
+});
+
+test("increases the output budget when a thinking-only judge response is truncated", async () => {
+  const budgets: Array<number | undefined> = [];
+  let attempts = 0;
+  const judgeRuntime = {
+    complete: async (request: CanonicalModelRequest) => {
+      budgets.push(request.maxOutputTokens);
+      attempts += 1;
+      if (attempts < 3) {
+        return {
+          role: "assistant" as const,
+          content: [{ type: "thinking" as const, text: "unfinished analysis" }],
+          finishReason: "length" as const,
+        };
+      }
+      return {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "<tier>medium</tier>" }],
+        finishReason: "stop" as const,
+      };
+    },
+  } as unknown as ModelRuntime;
+
+  const result = await classifyAndRoute({
+    config: config(),
+    messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+    judgeRuntime,
+  });
+
+  assert.equal(result?.tier, "medium");
+  assert.equal(result?.judgeAttempts, 3);
+  assert.deepEqual(budgets, [256, 512, 1024]);
+});
+
 test("aborts the judge request when its classification timeout expires", async () => {
   let aborted = false;
   const judgeRuntime = {

@@ -279,56 +279,6 @@ test("task snapshot maps only approved facts and degrades locally", async (t) =>
   });
 });
 
-test("upgrade evidence is prioritized and dynamic tool failures affect later decisions", async (t) => {
-  await t.test("todo expansion outranks a high reliability request", async () => {
-    const result = await runHarness({
-      userMessage: "Make this production ready",
-      planSnapshot: {
-        requiresInitialization: false,
-        todos: [{ content: "new work", status: "pending" }],
-        todoDiagnostics: {
-          activeCount: 1,
-          lastWrite: { addedCount: 1, allCompleted: false },
-        },
-      },
-    });
-    assert.equal(result.metadata[0]?.upgradeEvidence, "todo_expanded");
-  });
-
-  await t.test("repeated tool errors appear on the next decide", async () => {
-    const calls = [
-      { id: "repeat-1", name: "bash", input: { command: "echo one" } },
-      { id: "repeat-2", name: "bash", input: { command: "echo two" } },
-    ];
-    const result = await runHarness({
-      scripts: [toolResponse(calls), finalResponse("done")],
-      toolResults: [[errorResult(calls[0]!), errorResult(calls[1]!)]],
-    });
-    assert.equal(result.metadata[0]?.upgradeEvidence, undefined);
-    assert.equal(result.metadata[1]?.upgradeEvidence, "repeated_tool_error");
-  });
-
-  await t.test("failed verification outranks the original reliability request", async () => {
-    const call = { id: "verify-1", name: "bash", input: { command: "npm run build" } };
-    const result = await runHarness({
-      userMessage: "Fully verify this change",
-      scripts: [toolResponse([call]), finalResponse("done")],
-      toolResults: [[errorResult(call)]],
-    });
-    assert.equal(result.metadata[0]?.upgradeEvidence, "high_reliability_request");
-    assert.equal(result.metadata[1]?.upgradeEvidence, "verification_failed");
-  });
-
-  await t.test("a failed non-verification command does not invent evidence", async () => {
-    const call = { id: "normal-1", name: "bash", input: { command: "echo hello" } };
-    const result = await runHarness({
-      scripts: [toolResponse([call]), finalResponse("done")],
-      toolResults: [[errorResult(call)]],
-    });
-    assert.equal(result.metadata[1]?.upgradeEvidence, undefined);
-  });
-});
-
 test("model override reads static facts without calling router decide", async () => {
   const result = await runHarness({
     userMessage: "继续",
@@ -377,19 +327,6 @@ function successResult(call: CanonicalToolCall): PilotDeckToolResult {
     toolCallId: call.id,
     toolName: call.name,
     content: [{ type: "text", text: "ok" }],
-    startedAt: "2026-09-11T00:00:00.000Z",
-    completedAt: "2026-09-11T00:00:00.001Z",
-  };
-}
-
-function errorResult(call: CanonicalToolCall): PilotDeckToolResult {
-  return {
-    type: "error",
-    toolCallId: call.id,
-    toolName: call.name,
-    error: { code: "tool_execution_failed", message: "failed" },
-    content: [{ type: "text", text: "failed" }],
-    metadata: { recovery: { failureClass: "execution" } },
     startedAt: "2026-09-11T00:00:00.000Z",
     completedAt: "2026-09-11T00:00:00.001Z",
   };

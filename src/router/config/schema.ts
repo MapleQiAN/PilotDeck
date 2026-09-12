@@ -28,10 +28,6 @@ export type RouterTokenSaverSubagentPolicy = "skip" | "judge";
 
 export const DEFAULT_SUBAGENT_POLICY: RouterTokenSaverSubagentPolicy = "judge";
 
-export type RouterTokenSaverCacheAwareSwitchingUpgradePolicy = "guard" | "amortized" | "exempt";
-
-export const DEFAULT_CACHE_AWARE_SWITCHING_UPGRADE_POLICY: RouterTokenSaverCacheAwareSwitchingUpgradePolicy = "guard";
-
 export type RouterTokenSaverConfig = {
   enabled: boolean;
   judge: RouterModelRef;
@@ -45,11 +41,11 @@ export type RouterTokenSaverConfig = {
   /**
    * Preserve the session's current model when its cache-read input cost is
    * cheaper than switching models and re-prefilling the full prompt.
+   * Judge-selected tier upgrades always switch immediately.
    */
   cacheAwareSwitching?: {
     enabled: boolean;
     minSavingsRatio: number;
-    upgradePolicy: RouterTokenSaverCacheAwareSwitchingUpgradePolicy;
   };
 };
 

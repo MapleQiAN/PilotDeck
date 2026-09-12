@@ -22,12 +22,6 @@ export type TaskCard = {
   updatedAt: number;
 };
 
-export type UpgradeEvidence =
-  | "verification_failed"
-  | "todo_expanded"
-  | "repeated_tool_error"
-  | "high_reliability_request";
-
 export type ContinuationRoutingInfo = {
   matched: true;
   previousTier: string;

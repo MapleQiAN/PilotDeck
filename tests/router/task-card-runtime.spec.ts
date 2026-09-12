@@ -76,7 +76,7 @@ function config(): RouterConfig {
         medium: { model: ref("main", "medium-model") },
         reasoning: { model: ref("main", "reasoning-model") },
       },
-      cacheAwareSwitching: { enabled: true, minSavingsRatio: 0, upgradePolicy: "guard" },
+      cacheAwareSwitching: { enabled: true, minSavingsRatio: 0 },
     },
     stats: { enabled: false },
   };
