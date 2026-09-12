@@ -430,12 +430,14 @@ export function createRouterRuntime(
 
     const custom = await resolveCustom(inputWithUsage);
     const scenarioOutcome = decideScenario(inputWithUsage, config.scenarios ?? {} as any);
+    const priorTaskDone = priorTaskCard?.taskDone === true;
     const continuationEligible = input.isMainAgent
       && input.metadata?.continuation?.matched === true
+      && !priorTaskDone
       && !custom?.provider
       && scenarioOutcome.scenarioType !== "explicit"
       && config.tokenSaver?.enabled === true;
-    const taskDoneReset = priorTaskCard?.taskDone === true && !continuationEligible;
+    const taskDoneReset = priorTaskDone;
     const snapshotStartsDifferentTask = taskDoneReset
       && snapshotCard?.taskDone === false
       && Boolean(snapshotCard.goal)
@@ -466,6 +468,7 @@ export function createRouterRuntime(
         : "scenario";
 
     let tokenSaverTier: string | undefined;
+    let retainedOrchestrationTier: string | undefined;
     let cacheAwareSwitch: RouterMutationsLog["cacheAwareSwitch"];
     const subagentPolicy = config.tokenSaver?.subagent?.policy ?? DEFAULT_SUBAGENT_POLICY;
     if (
@@ -555,11 +558,25 @@ export function createRouterRuntime(
           if (tokenSaver.selection) {
             selection = tokenSaver.selection;
             resolvedFrom = "tokenSaver";
-            // A failure already resolved to the safe fallback, while a
-            // confirmed new task must not inherit the previous task's model.
-            // In both cases, applying cache stickiness here can make the
-            // reported tier disagree with the model that actually executes.
-            if (!tokenSaver.failureReason && tokenSaver.isNewTask !== true) {
+            const previousTier = sticky?.tokenSaverTier ?? input.metadata?.previousTier;
+            const tierDirection = getTierDirection(previousTier, tokenSaver.tier);
+            const keepExistingOrchestration = sticky?.orchestrating === true
+              && !taskDoneReset
+              && tokenSaver.isNewTask !== true
+              && tierDirection !== "upgrade"
+              && previousStickySelection !== undefined
+              && previousTier !== undefined;
+            if (keepExistingOrchestration) {
+              // A running orchestration is task-scoped. Keep it for the same
+              // task (including uncertain/failed Judge results), but allow a
+              // confirmed new task or a higher tier to replace it.
+              selection = previousStickySelection;
+              retainedOrchestrationTier = previousTier;
+            } else if (
+              !tokenSaver.failureReason
+              && tokenSaver.isNewTask !== true
+              && !taskDoneReset
+            ) {
               const cacheAware = maybePreserveStickyForCache(
                 previousStickySelection,
                 selection,
@@ -572,9 +589,9 @@ export function createRouterRuntime(
               cacheAwareSwitch = cacheAware.mutation;
             }
           }
-          tokenSaverTier = cacheAwareSwitch?.action === "kept_sticky"
+          tokenSaverTier = retainedOrchestrationTier ?? (cacheAwareSwitch?.action === "kept_sticky"
             ? (sticky?.tokenSaverTier ?? input.metadata?.previousTier ?? tokenSaver.tier)
-            : tokenSaver.tier;
+            : tokenSaver.tier);
 
           const judgeCalled = Boolean(tokenSaver.judgeAttempts ?? tokenSaver.failure?.attempts);
           if (tokenSaver.failureReason) {
@@ -651,7 +668,8 @@ export function createRouterRuntime(
       mutations: {},
     };
 
-    const alreadyOrchestrating = sticky?.orchestrating === true;
+    const orchestrationReset = taskDoneReset || taskCardRoute?.isNewTask === true;
+    const alreadyOrchestrating = sticky?.orchestrating === true && !orchestrationReset;
     const tokenSaverActive = config.tokenSaver?.enabled === true && tokenSaverTier != null;
     const orchGate = tokenSaverActive || alreadyOrchestrating;
     console.log(
@@ -1175,28 +1193,17 @@ export function createRouterRuntime(
     const previousProvider = current?.stickyProvider;
     const previousModel = current?.stickyModel;
     const orchestrating = current?.orchestrating ?? false;
-    if (orchestrating && previousTier) {
-      // While orchestrating, preserve the tier sticky so continuation turns
-      // don't get re-judged and accidentally downgraded.
-      sessionStore.set({
-        sessionId,
-        isSubagent: false,
-        orchestrating,
-        tokenSaverTier: previousTier,
-        stickyProvider: current?.stickyProvider,
-        stickyModel: current?.stickyModel,
-        taskCard: current?.taskCard,
-        updatedAt: (deps.now?.() ?? new Date()).getTime(),
-      });
-    } else {
-      sessionStore.set({
-        sessionId,
-        isSubagent: false,
-        orchestrating,
-        taskCard: current?.taskCard,
-        updatedAt: (deps.now?.() ?? new Date()).getTime(),
-      });
-    }
+    // Clear the per-turn model sticky even while orchestrating so an ordinary
+    // new user message gets one Judge call to determine new_task. The
+    // orchestration flag and prior selection are returned separately, allowing
+    // the router to retain them when the Judge does not confirm a new task.
+    sessionStore.set({
+      sessionId,
+      isSubagent: false,
+      orchestrating,
+      taskCard: current?.taskCard,
+      updatedAt: (deps.now?.() ?? new Date()).getTime(),
+    });
     return { previousTier, previousProvider, previousModel, orchestrating };
   }
 
