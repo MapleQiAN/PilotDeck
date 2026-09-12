@@ -45,6 +45,8 @@ export type ClassifyAndRouteInput = {
   previousTier?: string;
   /** Deterministic read-only snapshot of the current task; forwarded to the judge prompt. */
   taskCard?: TaskCard;
+  /** Structured answers from ask_user_question for a one-shot reassessment. */
+  clarificationEvidence?: string;
   sessionId?: string;
   telemetry?: TelemetryClient;
 };
@@ -72,7 +74,13 @@ export async function classifyAndRoute(
   }
 
   const knownTiers = Object.keys(config.tiers);
-  const prompt = generateJudgePrompt({ userMessage, config, previousTier: input.previousTier, taskCard: input.taskCard });
+  const prompt = generateJudgePrompt({
+    userMessage,
+    config,
+    previousTier: input.previousTier,
+    taskCard: input.taskCard,
+    clarificationEvidence: input.clarificationEvidence,
+  });
   const judgeRequestBase: Omit<CanonicalModelRequest, "maxOutputTokens"> = {
     provider: config.judge.provider,
     model: config.judge.model,

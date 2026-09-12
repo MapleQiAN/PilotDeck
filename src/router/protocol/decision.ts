@@ -17,6 +17,11 @@ export type RouterDecisionResolution =
   | "custom"
   | "fallback";
 
+export type RouteReassessment = {
+  reason: "ask_user_question_answered";
+  evidence: string;
+};
+
 export type RouterMutationsLog = {
   systemPromptSlim?: { from: number; to: number; preservedKeywords: string[] };
   toolsStripped?: { before: number; after: number; mode?: "allowlist" | "blocklist"; patterns: string[] };
@@ -43,6 +48,7 @@ export type RouterMutationsLog = {
     hasCard: boolean;
     judgeCalled: boolean;
     isNewTask?: boolean;
+    reassessment?: RouteReassessment["reason"];
     reason: "continuation" | "task_done_reset" | "judge" | "fallback";
     fromPhase?: RoutePhase;
     toPhase?: RoutePhase;
@@ -102,6 +108,7 @@ export type RouterDecisionInput = {
     previousModel?: string;
     taskSnapshot?: TaskSnapshot;
     continuation?: ContinuationRoutingInfo;
+    routeReassessment?: RouteReassessment;
   };
 };
 
